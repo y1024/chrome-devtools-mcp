@@ -239,7 +239,7 @@ describe('McpContext', () => {
 
       // Verify it is not in the snapshot by default (due to role="none")
       await context.createTextSnapshot(page, false, undefined, []);
-      const snapshotBefore = page.getSnapshot();
+      const snapshotBefore = page.textSnapshot;
       if (!snapshotBefore) {
         throw new Error('Snapshot not created');
       }
@@ -259,7 +259,7 @@ describe('McpContext', () => {
       // Now take snapshot with extra handle
       await context.createTextSnapshot(page, false, undefined, [middleHandle]);
 
-      const snapshot = page.getSnapshot();
+      const snapshot = page.textSnapshot;
       if (!snapshot) {
         throw new Error('Snapshot not created');
       }

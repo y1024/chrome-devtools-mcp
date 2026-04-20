@@ -20,8 +20,6 @@ import type {
   TextSnapshotNode,
   GeolocationOptions,
   ExtensionServiceWorker,
-  TextSnapshot,
-  EmulationSettings,
 } from '../types.js';
 import type {InstalledExtension} from '../utils/ExtensionRegistry.js';
 import type {PaginationOptions} from '../utils/types.js';
@@ -262,12 +260,12 @@ export type ContextPage = Readonly<{
     options?: {timeout?: number; handleDialog?: 'accept' | 'dismiss' | string},
   ): Promise<void>;
   getInPageTools(): ToolGroup<InPageToolDefinition> | undefined;
-  getSnapshot(): TextSnapshot | null;
-  setSnapshot(snapshot: TextSnapshot): void;
-  getExtraHandles(): ElementHandle[] | undefined;
-  setExtraHandles(extraHandles: ElementHandle[]): void;
-  readonly uniqueBackendNodeIdToMcpId: Map<string, string>;
-  readonly emulationSettings: EmulationSettings;
+  executeInPageTool(
+    toolName: string,
+    params: Record<string, unknown>,
+    response: Response,
+    context: Context,
+  ): Promise<void>;
 }>;
 
 export function defineTool<Schema extends zod.ZodRawShape>(

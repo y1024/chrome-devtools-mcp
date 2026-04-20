@@ -38,7 +38,6 @@ import type {
   Context,
   DevToolsData,
   SupportedExtensions,
-  ContextPage,
 } from './tools/ToolDefinition.js';
 import type {TraceResult} from './trace-processing/parse.js';
 import type {
@@ -80,7 +79,7 @@ export class McpContext implements Context {
   #extensionServiceWorkers: ExtensionServiceWorker[] = [];
 
   #mcpPages = new Map<Page, McpPage>();
-  #selectedPage?: ContextPage;
+  #selectedPage?: McpPage;
   #networkCollector: NetworkCollector;
   #consoleCollector: ConsoleCollector;
   #devtoolsUniverseManager: UniverseManager;
@@ -166,10 +165,7 @@ export class McpContext implements Context {
     return context;
   }
 
-  resolveCdpRequestId(
-    page: ContextPage,
-    cdpRequestId: string,
-  ): number | undefined {
+  resolveCdpRequestId(page: McpPage, cdpRequestId: string): number | undefined {
     if (!cdpRequestId) {
       this.logger('no network request');
       return;
@@ -186,14 +182,14 @@ export class McpContext implements Context {
   }
 
   resolveCdpElementId(
-    page: ContextPage,
+    page: McpPage,
     cdpBackendNodeId: number,
   ): string | undefined {
     if (!cdpBackendNodeId) {
       this.logger('no cdpBackendNodeId');
       return;
     }
-    const snapshot = page.getSnapshot();
+    const snapshot = page.textSnapshot;
     if (!snapshot) {
       this.logger('no text snapshot');
       return;
@@ -286,7 +282,7 @@ export class McpContext implements Context {
     return this.#networkCollector.getById(page.pptrPage, reqid);
   }
 
-  async restoreEmulation(page: ContextPage) {
+  async restoreEmulation(page: McpPage) {
     const currentSetting = page.emulationSettings;
     await this.emulate(currentSetting, page.pptrPage);
   }
@@ -452,7 +448,7 @@ export class McpContext implements Context {
     return this.#selectedPage?.pptrPage === page;
   }
 
-  selectPage(newPage: ContextPage): void {
+  selectPage(newPage: McpPage): void {
     this.#selectedPage = newPage;
     this.#updateSelectedPageTimeouts();
   }
@@ -685,7 +681,7 @@ export class McpContext implements Context {
     return this.#mcpPages.get(page)?.devToolsPage;
   }
 
-  async getDevToolsData(page: ContextPage): Promise<DevToolsData> {
+  async getDevToolsData(page: McpPage): Promise<DevToolsData> {
     try {
       this.logger('Getting DevTools UI data');
       const devtoolsPage = this.getDevToolsPage(page.pptrPage);
@@ -722,10 +718,10 @@ export class McpContext implements Context {
    * Creates a text snapshot of a page.
    */
   async createTextSnapshot(
-    page: ContextPage,
+    page: McpPage,
     verbose = false,
     devtoolsData: DevToolsData | undefined = undefined,
-    extraHandles?: ElementHandle[],
+    extraHandles: ElementHandle[] = [],
   ): Promise<void> {
     const rootNode = await page.pptrPage.accessibility.snapshot({
       includeIframes: true,
@@ -784,18 +780,16 @@ export class McpContext implements Context {
 
     const rootNodeWithId = assignIds(rootNode);
 
-    if (extraHandles) {
-      await this.#insertExtraNodes(
-        page,
-        idToNode,
-        seenUniqueIds,
-        snapshotId,
-        idCounter,
-        rootNodeWithId,
-        seenBackendNodeIds,
-        extraHandles,
-      );
-    }
+    await this.#insertExtraNodes(
+      page,
+      idToNode,
+      seenUniqueIds,
+      snapshotId,
+      idCounter,
+      rootNodeWithId,
+      seenBackendNodeIds,
+      extraHandles,
+    );
 
     const snapshot: TextSnapshot = {
       root: rootNodeWithId,
@@ -804,7 +798,7 @@ export class McpContext implements Context {
       hasSelectedElement: false,
       verbose,
     };
-    page.setSnapshot(snapshot);
+    page.textSnapshot = snapshot;
     const data = devtoolsData ?? (await this.getDevToolsData(page));
     if (data?.cdpBackendNodeId) {
       snapshot.hasSelectedElement = true;
@@ -826,7 +820,7 @@ export class McpContext implements Context {
   // returned by in-page tools. We insert them into the tree by finding the closest ancestor in the
   // tree and inserting the node as a child. The ancestor's child nodes are re-parented if necessary.
   async #insertExtraNodes(
-    page: ContextPage,
+    page: McpPage,
     idToNode: Map<string, TextSnapshotNode>,
     seenUniqueIds: Set<string>,
     snapshotId: number,
@@ -968,10 +962,10 @@ export class McpContext implements Context {
           : 0;
     };
 
-    if (extraHandles) {
-      page.setExtraHandles(extraHandles);
+    if (extraHandles.length) {
+      page.extraHandles = extraHandles;
     }
-    for (const handle of page.getExtraHandles() ?? []) {
+    for (const handle of page.extraHandles) {
       const extraNode = await createExtraNode(handle);
       if (!extraNode) {
         continue;

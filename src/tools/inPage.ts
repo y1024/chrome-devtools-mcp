@@ -4,13 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import {logger} from '../logger.js';
-import {
-  zod,
-  ajv,
-  type JSONSchema7,
-  type ElementHandle,
-} from '../third_party/index.js';
+import {zod, ajv, type JSONSchema7} from '../third_party/index.js';
 
 import {ToolCategory} from './categories.js';
 import {definePageTool} from './ToolDefinition.js';
@@ -94,22 +88,6 @@ export const executeInPageTool = definePageTool({
       }
     }
 
-    // Creates array of ElementHandles from the UIDs in the params.
-    // We do not replace the uids with the ElementsHandles yet, because
-    // the `evaluate` function only turns them into DOM elements if they
-    // are passed as non-nested arguments.
-    const handles: ElementHandle[] = [];
-    for (const value of Object.values(params)) {
-      if (
-        value instanceof Object &&
-        'uid' in value &&
-        typeof value.uid === 'string' &&
-        Object.keys(value).length === 1
-      ) {
-        handles.push(await request.page.getElementByUid(value.uid));
-      }
-    }
-
     const toolGroup = request.page.getInPageTools();
     const tool = toolGroup?.tools.find(t => t.name === toolName);
     if (!tool) {
@@ -124,180 +102,6 @@ export const executeInPageTool = definePageTool({
       );
     }
 
-    const result = await request.page.pptrPage.evaluate(
-      async (name, args, ...elements) => {
-        // Replace the UIDs with DOM elements.
-        for (const [key, value] of Object.entries(args)) {
-          if (
-            value instanceof Object &&
-            'uid' in value &&
-            typeof value.uid === 'string' &&
-            Object.keys(value).length === 1
-          ) {
-            args[key] = elements.shift();
-          }
-        }
-
-        if (!window.__dtmcp?.executeTool) {
-          throw new Error('No tools found on the page');
-        }
-        const toolResult = await window.__dtmcp.executeTool(name, args);
-
-        const stashDOMElement = (el: Element) => {
-          if (!window.__dtmcp) {
-            window.__dtmcp = {};
-          }
-          if (window.__dtmcp.stashedElements === undefined) {
-            window.__dtmcp.stashedElements = [];
-          }
-          window.__dtmcp.stashedElements.push(el);
-          return {
-            stashedId: `stashed-${window.__dtmcp.stashedElements.length - 1}`,
-          };
-        };
-
-        const ancestors: unknown[] = [];
-        // Recursively walks the tool result:
-        // - Replaces DOM elements with an ID and stashes the DOM element on the window object
-        // - Replaces non-plain objects with a string representation of the object
-        // - Replaces circular references with the string '<Circular reference>'
-        // - Replaces functions with the string '<Function object>'
-        const processToolResult = (
-          data: unknown,
-          parentEl?: unknown,
-        ): unknown => {
-          // 1. Handle DOM Elements
-          if (data instanceof Element) {
-            return stashDOMElement(data);
-          }
-
-          // 2. Handle Arrays
-          if (Array.isArray(data)) {
-            return data.map((item: unknown) =>
-              processToolResult(item, parentEl),
-            );
-          }
-
-          // 3. Handle Objects
-          if (data !== null && typeof data === 'object') {
-            while (ancestors.length > 0 && ancestors.at(-1) !== parentEl) {
-              ancestors.pop();
-            }
-            if (ancestors.includes(data)) {
-              return '<Circular reference>';
-            }
-            ancestors.push(data);
-
-            // If not a plain object, return a string representation of the object
-            if (Object.getPrototypeOf(data) !== Object.prototype) {
-              return `<${data.constructor.name} instance>`;
-            }
-
-            const processedObj: Record<string, unknown> = {};
-            for (const [key, value] of Object.entries(data)) {
-              processedObj[key] = processToolResult(value, data);
-            }
-            return processedObj;
-          }
-
-          // 4. Handle Functions
-          if (typeof data === 'function') {
-            return '<Function object>';
-          }
-
-          // 5. Return primitives (strings, numbers, booleans) as-is
-          return data;
-        };
-
-        return {
-          result: processToolResult(toolResult),
-          stashed: window.__dtmcp?.stashedElements?.length ?? 0,
-        };
-      },
-      toolName,
-      params,
-      ...handles,
-    );
-
-    const elementHandles: ElementHandle[] = [];
-    for (let i = 0; i < (result.stashed ?? 0); i++) {
-      const elementHandle = await request.page.pptrPage.evaluateHandle(
-        index => {
-          const el = window.__dtmcp?.stashedElements?.[index];
-          if (!el) {
-            throw new Error(`Stashed element at index ${index} not found`);
-          }
-          return el;
-        },
-        i,
-      );
-      elementHandles.push(elementHandle);
-    }
-    const resultWithStashedElements = result.result;
-
-    let isPageSnapshotUpdated = false;
-
-    const stashedToUid = async (index: number) => {
-      const backendNodeId = await elementHandles[index].backendNodeId();
-      if (!backendNodeId) {
-        logger(`No backendNodeId for stashed DOM element with index ${index}`);
-        return {uid: `stashed-${index}`};
-      }
-      let cdpElementId = context.resolveCdpElementId(
-        request.page,
-        backendNodeId,
-      );
-      if (!cdpElementId) {
-
-        await context.createTextSnapshot(
-          request.page,
-          false,
-          undefined,
-          elementHandles,
-        );
-        isPageSnapshotUpdated = true;
-        cdpElementId = context.resolveCdpElementId(request.page, backendNodeId);
-      }
-      if (!cdpElementId) {
-        logger(`Could not get cdpElementId for backend node ${backendNodeId}`);
-        return {uid: `stashed-${index}`};
-      }
-      return {uid: cdpElementId};
-    };
-
-    const recursivelyReplaceStashedElements = async (
-      node: unknown,
-    ): Promise<unknown> => {
-      if (Array.isArray(node)) {
-        return await Promise.all(
-          node.map(async x => await recursivelyReplaceStashedElements(x)),
-        );
-      }
-      if (node !== null && typeof node === 'object') {
-        if (
-          'stashedId' in node &&
-          typeof node.stashedId === 'string' &&
-          node.stashedId.startsWith('stashed-') &&
-          Object.keys(node).length === 1
-        ) {
-          const index = parseInt(node.stashedId.split('-')[1]);
-          return stashedToUid(index);
-        }
-        const resultObj: Record<string, unknown> = {};
-        for (const [key, value] of Object.entries(node)) {
-          resultObj[key] = await recursivelyReplaceStashedElements(value);
-        }
-        return resultObj;
-      }
-      return node;
-    };
-
-    const resultWithUids = await recursivelyReplaceStashedElements(
-      resultWithStashedElements,
-    );
-    response.appendResponseLine(JSON.stringify(resultWithUids, null, 2));
-    if (isPageSnapshotUpdated) {
-      response.includeSnapshot();
-    }
+    await request.page.executeInPageTool(toolName, params, response, context);
   },
 });
